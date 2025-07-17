@@ -1,0 +1,6 @@
+.sconsign.dblite
+bin/
+*.o
+*.os
+.DS_Store
+Thumbs.db
