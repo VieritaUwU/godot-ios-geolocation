@@ -1,7 +1,7 @@
 #import "geolocation.h"
-
-#import <Foundation/Foundation.h>
 #import <CoreLocation/CoreLocation.h>
+#include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #if VERSION_MAJOR == 4
 typedef PackedByteArray GodotByteArray;
@@ -17,22 +17,42 @@ typedef PoolByteArray GodotByteArray;
 /*
  * Geolocation Objective C Class
  */
-@interface GodotGeolocation : NSObject <CLLocationManagerDelegate>
 
-@property (nonatomic, strong) CLLocationManager* locationManager;
+@interface GeolocationDelegate : NSObject <CLLocationManagerDelegate>
+@property (nonatomic, assign) Geolocation *owner;
+@end
 
-@property BOOL returnCoordinatesAsString;
-@property BOOL onlySendLatestLocation;
+@implementation GeolocationDelegate
 
-@property BOOL isUpdatingLocation;
-@property BOOL isUpdatingHeading;
+- (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
+    if (self.owner && locations.lastObject) {
+        self.owner->handle_location_update(locations.lastObject);
+    }
+}
 
-@property Dictionary lastLocationData;
-@property Dictionary lastHeadingData;
+- (void)locationManager:(CLLocationManager *)manager didFailWithError:(NSError *)error {
+    if (self.owner) {
+        self.owner->handle_error(error);
+    }
+}
 
-@property BOOL failureTimeoutRunning; // -timeout
-@property BOOL useFailureTimeout; // -timeout
-@property (nonatomic) double failureTimeout; // -timeout
+
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
+    if (self.owner) {
+        if (@available(iOS 14.0, *)) {
+            self.owner->handle_authorization_change(manager.authorizationStatus);
+        } else {
+            self.owner->handle_authorization_change([CLLocationManager authorizationStatus]);
+        }
+    }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didUpdateHeading:(CLHeading *)newHeading {
+    if (self.owner) {
+        self.owner->handle_heading_update(newHeading);
+    }
+}
+@end
 
 - (void)initialize;
 
@@ -62,246 +82,64 @@ typedef PoolByteArray GodotByteArray;
 @end
 
 
-@implementation GodotGeolocation
+// Construcutor
 
-@synthesize locationManager;
-
-- (void)initialize
-{
-    self.locationManager = [[CLLocationManager alloc] init];
-    self.locationManager.delegate = self; // Tells the location manager to send updates to this object
-    
-    self.failureTimeout = 20; // -timeout
-    
-    
-    self.returnCoordinatesAsString = [[[NSBundle mainBundle] objectForInfoDictionaryKey:@"GeolocationReturnCoordinatesAsString"] boolValue];
-    self.onlySendLatestLocation = [[[NSBundle mainBundle] objectForInfoDictionaryKey:@"GeolocationOnlySendLatestLocation"] boolValue];
+Geolocation::Geolocation() {
+	location_manager = [[CLLocationManager alloc] init];
+	location_delegate = [[GeolocationDelegate alloc] init];
+	
+	CLLocationManager *manager = (__bridge CLLocationManager *)location_manager;
+	GeolocationDelegate *delegate = (__bridge GeolocationDelegate *)location_delegate;
+	
+	manager.delegate = delegate;
+	delegate.owner = this;
+	
+	is_updating_location = false;
+	is_updating_heading = false;
+	return_coordinates_as_string = false;
+	only_send_latest_location = true;
+	send_debug_log = false;
+	
+	godot::UtilityFunctions::print("Geolocation GDExtension Initialized.");
 }
 
-- (bool)supportsMethod:(String)methodName
-{
-    static NSArray *supportedMethods = @[@"request_permission", @"authorization_status", @"allows_full_accuracy",
-                              @"can_request_permissions",@"is_updating_location",@"is_updating_heading",
-                              @"set_distance_filter",@"set_desired_accuracy",@"set_return_string_coordinates",
-                              @"request_location",@"start_updating_location",@"stop_updating_location",
-                              @"start_updating_heading",@"stop_updating_heading",@"request_location_capabilty",
-                              @"set_debug_log_signal",@"set_failure_timeout",@"should_check_location_capability"];
-    NSString* methodNameString = [[NSString alloc] initWithUTF8String:methodName.utf8().get_data()];
-    BOOL contains = [supportedMethods containsObject:methodNameString];
-    return contains;
+Geolocation::~Geolocation() {
+	CLLocationManager *manager = (__bridge_transfer CLLocationManager *)location_manager;
+	__bridge_transfer GeolocationDelegate *delegate;
+	
+	manager.delegate = null;
+	
+	godot::UtilityFunctions::print("Geolocation GDExtension Deinitialized.");
 }
 
-- (void)setFailureTimeout:(double)seconds // setter
-{
-    Geolocation::get_singleton()->send_log_signal("setFailureTimeout",seconds);
-    self.useFailureTimeout = (seconds > 0);
-    _failureTimeout = seconds;
-}
-
-- (void)startFailureTimeout // -timeout
-{
-    if(!self.useFailureTimeout) return;
-    Geolocation::get_singleton()->send_log_signal("a startFailureTimeout START");
+void Geolocation::_bind_methods() {
+	// Methods
+	ClassDB::bind_method(D_METHOD("Start_updating_location"), &Geolocation::start_updating_location);
+	ClassDB::bind_method(D_METHOD("Stop_updating_location"), &Geolocation::stop_updating_location);
+	ClassDB::bind_method(D_METHOD("request_permission"), &Geolocation::request_permission);
+	ClassDB::bind_method(D_METHOD("get_authorization_status"), &Geolocation::get_authorization_status);
+	
+	// Getters for the state
+	ClassDB::bind_method(D_METHOD("is_updating_location"), &Geolocation::is_updating_location_getter);
+	ClassDB::bind_method(D_METHOD("is_updating_heading"), &Geolocation::is_updating_heading_getter);
+	
+	// Signals
+	ADD_SIGNAL(MethodInfo("location_updated", PropertyInfo(Variant::DICTIONARY, "location_data")));
+	ADD_SIGNAL(MethodInfo("authorization_changed", PropertyInfo(Variant::INT, "status")));
+	ADD_SIGNAL(MethodInfo("error_occurred", PropertyInfo(Variant::INT, "error_code"), PropertyInfo(Variant::STRING, "error_message")));
+	ADD_SIGNAL(MethodInfo("heading_updated", PropertyInfo(Variant::DICTIONARY, "heading_data")));
+	ADD_SIGNAL(MethodInfo("log_message", PropertyInfo(Variant::STRING, "message")));
+	
+	// ENUMS
+	BIND_ENUM_CONSTANT(PERMISSION_STATUS_UNKNOWN);
+	BIND_ENUM_CONSTANT(PERMISSION_STATUS_DENIED);
+	BIND_ENUM_CONSTANT(PERMISSION_STATUS_ALLOWED);
     
-    [self performSelector:@selector(onFailureTimeout) withObject: self afterDelay: self.failureTimeout];
-    self.failureTimeoutRunning = true;
-}
-
-- (void)stopFailureTimeout // -timeout
-{
-    if(!self.useFailureTimeout) return;
-    Geolocation::get_singleton()->send_log_signal("a stopFailureTimeout STOP");
-    
-    [NSObject cancelPreviousPerformRequestsWithTarget: self selector:@selector(onFailureTimeout) object: self];
-    self.failureTimeoutRunning = false;
-}
-
-- (void)onFailureTimeout // -timeout
-{
-    Geolocation::get_singleton()->send_log_signal("a onFailureTimeout ERROR TIMEOUT");
-    Geolocation::get_singleton()->send_error_signal(Geolocation::ERROR_TIMEOUT);
-    self.failureTimeoutRunning = false;
-    // stop location updates
-    if(self.isUpdatingLocation)
-    {
-        [self.locationManager stopUpdatingLocation];
-    }
-}
-
-
-- (Geolocation::GeolocationAuthorizationStatus)authorizationStatus
-{
-    NSUInteger code;
-    
-    if (@available(iOS 14.0, *)) {
-        code = self.locationManager.authorizationStatus;
-    } else {
-        // Fallback on earlier versions
-        code = [CLLocationManager authorizationStatus]; // old
-    }
-    
-    switch(code){
-        case kCLAuthorizationStatusNotDetermined:
-            return Geolocation::PERMISSION_STATUS_UNKNOWN;
-        case kCLAuthorizationStatusRestricted:
-        case kCLAuthorizationStatusDenied:
-            return Geolocation::PERMISSION_STATUS_DENIED;
-        case kCLAuthorizationStatusAuthorizedAlways:
-        case kCLAuthorizationStatusAuthorizedWhenInUse:
-            return Geolocation::PERMISSION_STATUS_ALLOWED;
-    }
-    
-    return Geolocation::PERMISSION_STATUS_DENIED;
-}
-
-- (void) setDistanceFilter:(CLLocationDistance)distance // in meters
-{
-    if(distance == 0)
-    {
-        self.locationManager.distanceFilter = kCLDistanceFilterNone;
-    } else {
-        self.locationManager.distanceFilter = distance;
-    }
-}
-
-- (void) setDesiredAccuracy:(CLLocationAccuracy)accuracy
-{
-    self.locationManager.desiredAccuracy = kCLLocationAccuracyBest;
-}
-
-- (void)requestLocation
-{
-    if([self authorizationStatus] != Geolocation::PERMISSION_STATUS_ALLOWED)
-    {
-        Geolocation::get_singleton()->send_error_signal(Geolocation::ERROR_DENIED);
-        return;
-    }
-    
-    [self.locationManager requestLocation];
-    [self startFailureTimeout]; // -timeout
-}
-
-- (void)startWatch
-{
-    if([self authorizationStatus] != Geolocation::PERMISSION_STATUS_ALLOWED)
-    {
-        Geolocation::get_singleton()->send_error_signal(Geolocation::ERROR_DENIED);
-        return;
-    }
-    
-    [self.locationManager startUpdatingLocation];
-    self.isUpdatingLocation = YES;
-    [self startFailureTimeout]; // -timeout
-}
-
-- (void) sendLocationUpdate:(CLLocation *) location
-{
-    //NSLog(@"Single element: %@", location);
-    
-    //Dictionary locationData;
-    self.lastLocationData["latitude"] = location.coordinate.latitude;
-    self.lastLocationData["longitude"] = location.coordinate.longitude;
-    self.lastLocationData["accuracy"] = location.horizontalAccuracy;
-
-    if(self.returnCoordinatesAsString)
-    {
-        char latString[20];
-        snprintf(latString,20,"%.15f", location.coordinate.latitude);
-        self.lastLocationData["latitude_string"] = latString;
-        
-        char lonString[20];
-        snprintf(lonString,20,"%.15f", location.coordinate.longitude);
-        self.lastLocationData["longitude_string"] = lonString;
-    }
-    
-    self.lastLocationData["altitude"] = location.altitude;  
-    self.lastLocationData["altitude_accuracy"] = location.verticalAccuracy;
-    self.lastLocationData["course"] = location.course;
-    
-    if (@available(iOS 13.4, *)) {
-        self.lastLocationData["course_accuracy"] = location.courseAccuracy;
-    } else {
-        // Fallback on earlier versions
-        self.lastLocationData["course_accuracy"] = -1.0;
-    }
-    
-    self.lastLocationData["speed"] = location.speed; // m/s
-    self.lastLocationData["speed_accuracy"] = location.speedAccuracy;
-    self.lastLocationData["timestamp"] = (int)location.timestamp.timeIntervalSince1970;
-    
-    Geolocation::get_singleton()->send_location_update_signal(self.lastLocationData);
-}
-
-// location manager delegate methods
-
-- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager
-{
-    Geolocation::GeolocationAuthorizationStatus authorizationStatus = [self authorizationStatus];
-    Geolocation::get_singleton()->send_authorization_changed_signal(authorizationStatus);
-}
-
-- (void)locationManager:(CLLocationManager *)manager
-     didUpdateLocations:(NSArray<CLLocation *> *)locations
-{
-    // -timeout
-    if(self.failureTimeoutRunning)
-    {
-        [self stopFailureTimeout];
-    }
-    
-    if(self.onlySendLatestLocation)
-    {
-        [self sendLocationUpdate:locations.lastObject];
-    } else
-    {
-        for (CLLocation *location in locations) {
-            [self sendLocationUpdate:location];
-        }
-    }
-}
-
-- (void)locationManager:(CLLocationManager *)manager
-       didFailWithError:(NSError *)error
-{
-    Geolocation::GeolocationErrorCodes errorCode;
-    
-    self.isUpdatingLocation = false;
-    
-    switch(error.code)
-    {
-        case kCLErrorDenied:
-        case kCLErrorPromptDeclined:
-            errorCode = Geolocation::ERROR_DENIED;
-            break;
-        case kCLErrorNetwork:
-            errorCode = Geolocation::ERROR_NETWORK;
-            break;
-        case kCLErrorHeadingFailure:
-            errorCode = Geolocation::ERROR_HEADING_FAILURE;
-            self.isUpdatingHeading = false;
-            break;
-        default:
-            errorCode = Geolocation::ERROR_UNKNOWN;
-    }
-      
-    Geolocation::get_singleton()->send_error_signal(errorCode);
-    //Geolocation::get_singleton()->send_log_signal([error.localizedFailureReason UTF8String],error.code);
-}
-
-- (void)locationManager:(CLLocationManager *)manager
-       didUpdateHeading:(CLHeading *)newHeading
-{
-    self.lastHeadingData["magnetic_heading"] = newHeading.magneticHeading;
-    self.lastHeadingData["true_heading"] = newHeading.trueHeading;
-    self.lastHeadingData["heading_accuracy"] = newHeading.headingAccuracy;
-    self.lastHeadingData["timestamp"] = (int)newHeading.timestamp.timeIntervalSince1970;
-    
-    Geolocation::get_singleton()->send_heading_update_signal(self.lastHeadingData);
-}
-
-
-@end
-
+	BIND_ENUM_CONSTANT(ERROR_DENIED);
+	BIND_ENUM_CONSTANT(ERROR_NETWORK);
+	BIND_ENUM_CONSTANT(ERROR_HEADING_FAILURE);
+	BIND_ENUM_CONSTANT(ERROR_LOCATION_UNKNOWN);
+	BIND_ENUM_CONSTANT(ERROR_UNKNOWN);
 
 /*
  * Bind plugin's public interface
