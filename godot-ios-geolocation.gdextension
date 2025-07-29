@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "geolocation_library_init"
+compatibility_minimum = "4.1"
+
+[libraries]
+
+ios.arm64 = "res://addons/godot-ios-geolocation/bin/libgodot_ios_geolocation.ios.template_release.arm64.dylib"
+ios.simulator_arm64 = "res://addons/godot-ios-geolocation/bin/libgodot_ios_geolocation.ios.template_release.simulator_arm64.dylib"
+ios.simulator_x86_64 = "res://addons/godot-ios-geolocation/bin/libgodot_ios_geolocation.ios.template_release.simulator_x86_64.dylib"
